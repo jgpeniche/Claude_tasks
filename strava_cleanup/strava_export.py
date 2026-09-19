@@ -13,10 +13,12 @@ El token de `upload` tiene que ser de la CUENTA NUEVA y con scope activity:write
 
 import argparse
 import csv
+import gzip
 import io
 import json
 import os
 import shutil
+import signal
 import sys
 import time
 import zipfile
@@ -175,7 +177,72 @@ def cmd_upload(args):
     print(f"\n{ok}/{len(files)} subidas correctamente.")
 
 
+def activity_files(z):
+    return [n for n in z.namelist()
+            if n.startswith("activities/") and not n.endswith("/")]
+
+
+def file_mentions(z, name, needle):
+    """Busca el texto dentro del fichero de actividad, descomprimiendo si toca."""
+    raw = z.read(name)
+    if name.endswith(".gz"):
+        try:
+            raw = gzip.decompress(raw)
+        except OSError:
+            pass
+    return needle.lower().encode() in raw.lower()
+
+
+def cmd_prune(args):
+    """Copia el ZIP dejando solo las actividades cuyo fichero menciona --match."""
+    needle = args.match
+    with zipfile.ZipFile(args.zip) as z:
+        acts = activity_files(z)
+        keep_files = {n for n in acts if file_mentions(z, n, needle)}
+        print(f"{len(acts)} ficheros de actividad, {len(keep_files)} mencionan "
+              f"{needle!r}")
+        if not keep_files:
+            sys.exit("Ninguna coincidencia: no genero nada para no dejarte un ZIP vacio.")
+
+        rows = read_index(args.zip)
+        keep_rows = [r for r in rows if r["filename"] in keep_files]
+        for r in keep_rows:
+            print(f"  conservo {r['id']}  {r['date'][:22]}  {r['name'][:35]!r}")
+
+        # activities.csv filtrado, respetando cabeceras originales
+        text = z.read(
+            next(n for n in z.namelist() if n.endswith("activities.csv"))
+        ).decode("utf-8-sig")
+        reader = csv.reader(io.StringIO(text))
+        header = next(reader)
+        fcol = next(i for i, h in enumerate(header)
+                    if "archivo" in h.lower() or "filename" in h.lower())
+        kept_csv = [row for row in reader
+                    if len(row) > fcol and row[fcol] in keep_files]
+        buf = io.StringIO()
+        w = csv.writer(buf, lineterminator="\n")
+        w.writerow(header)
+        w.writerows(kept_csv)
+
+        drop = len(acts) - len(keep_files)
+        with zipfile.ZipFile(args.out, "w", zipfile.ZIP_DEFLATED) as out:
+            for item in z.infolist():
+                n = item.filename
+                if n.startswith("activities/") and n not in keep_files:
+                    continue
+                if n.endswith("activities.csv"):
+                    out.writestr(item, buf.getvalue())
+                else:
+                    out.writestr(item, z.read(n))
+
+    size = Path(args.out).stat().st_size
+    print(f"\n{drop} actividades eliminadas de la copia.")
+    print(f"Copia en {args.out} ({size/1e6:.1f} MB). El original no se ha tocado.")
+
+
 def main():
+    # no romper cuando la salida se canaliza a head/less
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -195,6 +262,13 @@ def main():
     u.add_argument("dir")
     u.add_argument("--dry-run", action="store_true")
     u.set_defaults(fn=cmd_upload)
+
+    pr = sub.add_parser("prune", help="copia el ZIP solo con lo que coincida")
+    pr.add_argument("zip")
+    pr.add_argument("--match", required=True,
+                    help="texto a buscar DENTRO de cada fichero, ej. keiser")
+    pr.add_argument("--out", required=True)
+    pr.set_defaults(fn=cmd_prune)
 
     args = ap.parse_args()
     args.fn(args)

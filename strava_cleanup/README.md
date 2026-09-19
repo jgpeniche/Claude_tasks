@@ -60,13 +60,24 @@ No toques el Paso 3 (eliminar cuenta) hasta tener el ZIP descargado.
 
 ## B. Localizar las de Keiser
 
-    python3 strava_export.py index export.zip --grep keiser
+Ojo: **los nombres en Strava no dicen "Keiser"** — salen como "Morning Ride",
+"Evening Ride", etc. Asi que `--grep keiser` sobre el indice no encuentra nada.
 
-Si el nombre no las delata, lista todo (`index` sin `--grep`) y busca por fecha.
+La firma real esta DENTRO del fichero: la app Keiser Metrics sube `.tcx` con
+`<Notes>Keiser M3i</Notes>`. Por eso `prune` busca en el contenido:
+
+    python3 strava_export.py prune export.zip --match keiser --out solo_keiser.zip
+
+Genera una copia del export con solo las actividades que coinciden. Mantiene
+`activities.csv` filtrado y el resto de CSV de cuenta intactos. No modifica el
+original.
 
 ## C. Extraer sus ficheros
 
     python3 strava_export.py extract export.zip --ids 9001,9003 --out rescatadas/
+
+Los IDs son los de la columna "Id. de actividad", que NO coinciden con el
+numero del nombre de fichero (ese es el id de subida).
 
 Guarda los `.fit.gz` originales mas un `meta.json` con los nombres. Las
 actividades creadas a mano en Strava no tienen fichero y no se pueden resubir.
